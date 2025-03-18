@@ -1,0 +1,58 @@
+cat /etc/ftpusers
+cat /etc/passwd | grep angel
+sudo chmod 750 /srv/ftp/angel
+sudo chown angel:reprobados /srv/ftp/angel
+sudo cat /var/log/vsftpd.log
+
+### **Revisemos los errores en FileZilla**
+1. **`550 Permission denied` al crear un directorio en `/srv/ftp/angel/general`**  
+   - Parece que la configuración `anon_mkdir_write_enable=YES` y `anon_other_write_enable=YES` no están funcionando correctamente.  
+   - Aunque `anon_mkdir_write_enable=YES` permite a los usuarios anónimos crear directorios, la línea `anon_other_write_enable=YES` no es una opción válida en `vsftpd.conf`. Debería ser eliminada.  
+
+### **Soluciones y pasos a seguir**
+1. **Asegurar permisos correctos**
+   ```bash
+   sudo chmod -R 775 /srv/ftp/general /srv/ftp/reprobados /srv/ftp/recursadores
+   sudo chown -R ftp:ftp /srv/general
+   sudo chown -R :reprobados /srv/ftp/reprobados
+   sudo chown -R :recursadores /srv/ftp/recursadores
+   sudo chown -R root:ftp /srv/ftp/general
+
+
+ls -ld /srv/ftp/angel
+ls -ld /srv/ftp/angel/general
+ls -ld /srv/general
+
+
+sudo chmod 775 /srv/ftp/general
+sudo chmod 770 /srv/ftp/reprobados /srv/ftp/recursadores
+sudo chown -R :ftp /srv/general
+sudo setfacl -m g:reprobados:rwx /srv/ftp/reprobados
+sudo setfacl -m g:recursadores:rwx /srv/ftp/recursadores
+
+
+#http
+ls -l /usr/sbin/cherokee
+sudo apt-get install --reinstall cherokee
+sudo chmod +x /usr/sbin/cherokee
+sudo systemctl cat cherokee
+journalctl -xeu cherokee
+systemctl status cherokee
+cherokee -d
+
+sudo systemctl status caddy
+sudo systemctl start caddy
+sudo systemctl enable caddy
+:80 {
+    respond "¡Caddy está funcionando!"
+}
+sudo systemctl reload caddy
+sudo lsof -i -P -n | grep LISTEN
+journalctl -u caddy --no-pager | tail -n 20
+{
+    auto_https off
+}
+
+:80 {
+    respond "¡Caddy está funcionando en HTTP!"
+}
