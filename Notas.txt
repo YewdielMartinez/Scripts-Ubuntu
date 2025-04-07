@@ -56,3 +56,55 @@ journalctl -u caddy --no-pager | tail -n 20
 :80 {
     respond "¡Caddy está funcionando en HTTP!"
 }
+sudo apt install dos2unix
+dos2unix ssh.sh
+sudo /usr/local/nginx/sbin/nginx
+
+
+worker_processes 1;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    include       mime.types;
+    default_type  application/octet-stream;
+
+    server {
+        listen 80;
+        location / {
+            root /usr/local/nginx/html;
+            index index.html index.htm;
+        }
+    }
+
+    server {
+        listen 443 ssl;
+        ssl_certificate /etc/nginx/certs/nginx.crt;
+        ssl_certificate_key /etc/nginx/certs/nginx.key;
+
+        location / {
+            root /usr/local/nginx/html;
+            index index.html index.htm;
+        }
+    }
+}
+
+
+
+
+sudo touch /usr/local/nginx/logs/nginx.pid
+sudo chown -R nginx:nginx /usr/local/nginx/logs/
+HELO 192.168.100.9
+MAIL FROM:<sara@yewdiel.com> 
+RCPT TO:<edgar@yewdiel.com> 
+DATA
+Subject: Prueba de correo
+
+Este es un correo de prueba.
+.
+QUIT
+#!/bin/bash
+read -s -p "Ingrese la contraseña del usuario: " password
+sudo systemctl status dovecot

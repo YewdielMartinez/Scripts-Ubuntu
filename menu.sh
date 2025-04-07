@@ -15,7 +15,9 @@ while true; do
     echo "2. Configurar servidor DHCP"
     echo "3. Configurar IP fija"
     echo "4. Configurar servidor SSH"
-    echo "5. Salir"
+    echo "5. Configurar servidor FTP"
+    echo "6. Configurar servidor HTTP"
+    echo "7. Salir"
     echo "----------------------------"
     read -rp "Opción: " opcion
 
@@ -25,7 +27,9 @@ while true; do
         3) set_static_ip ;;
         4) configurar_ssh ;;
         4) configurar_ssh ;;
-        5) echo "Saliendo..."; exit 0 ;;
+        5) configurar_ftp ;;
+        6) main_menuhttp ;;
+        7) echo "Saliendo..."; exit 0 ;;
         *) echo "Opción no válida. Inténtalo de nuevo." ;;
     esac
 done

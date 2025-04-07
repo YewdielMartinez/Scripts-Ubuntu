@@ -1,0 +1,46 @@
+3. ✅ Verifica que Dovecot está usando autenticación PAM (usuarios del sistema)
+
+Abre este archivo:
+
+sudo nano /etc/dovecot/conf.d/10-auth.conf
+
+Asegúrate que diga:
+
+disable_plaintext_auth = no
+auth_mechanisms = plain login
+!include auth-system.conf.ext
+
+Y en el archivo /etc/dovecot/conf.d/10-master.conf, asegúrate que la sección unix_listener /var/spool/postfix/private/auth esté así:
+
+unix_listener /var/spool/postfix/private/auth {
+  mode = 0660
+  user = postfix
+  group = postfix
+}
+
+    ⚠️ Esto es lo que permite que Postfix use Dovecot como servidor de autenticación.
+
+4. ✅ Verifica que Postfix permite autenticación SASL
+
+Ejecuta esto para revisar configuración:
+
+postconf | grep sasl
+
+Asegúrate que los valores sean algo como:
+
+smtpd_sasl_type = dovecot
+smtpd_sasl_path = private/auth
+smtpd_sasl_auth_enable = yes
+smtpd_recipient_restrictions = permit_sasl_authenticated,permit_mynetworks,reject_unauth_destination
+
+Si no están configurados, agrégalos con:
+
+sudo postconf -e "smtpd_sasl_type = dovecot"
+sudo postconf -e "smtpd_sasl_path = private/auth"
+sudo postconf -e "smtpd_sasl_auth_enable = yes"
+sudo postconf -e "smtpd_recipient_restrictions = permit_sasl_authenticated,permit_mynetworks,reject_unauth_destination"
+
+Y reinicia servicios:
+
+sudo systemctl restart postfix dovecot
+

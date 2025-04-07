@@ -1,7 +1,8 @@
 #!/bin/bash
 
-# Puertos permitidos (excluyendo puertos comunes reservados)
+# Puertos permitidos (excluyendo puertos comunes reservados).
 allowed_ports=(80 1024 8080 2019 3000 5000 8081 8443)
+allowed_https_ports=(443 8443)  # Puertos HTTPS permitidos
 
 # Verificar si wget está instalado
 if ! command -v wget &> /dev/null; then
@@ -14,6 +15,20 @@ if ! command -v curl &> /dev/null; then
     echo "Error: curl no está instalado. Instálalo con 'sudo apt install curl'."
     exit 1
 fi
+
+
+# Función para preguntar si activar SSL
+ssl_activate() {
+    while true; do
+        read -p "¿Deseas activar SSL? (si/no): " respuesta
+        case $respuesta in
+            [Ss]* ) echo "si"; return 0;;
+            [Nn]* ) echo "no"; return 1;;
+            * ) echo "Por favor, responde 'si' o 'no'.";;
+        esac
+    done
+}
+
 
 # Validar que el puerto sea un número válido, exista y no esté en uso
 validate_port() {
@@ -63,6 +78,8 @@ get_latest_tomcat_versions() {
 
     echo "$stable_version $dev_version"
 }
+
+
 
 # Instalar Tomcat
 install_tomcat() {
@@ -138,9 +155,47 @@ install_tomcat() {
     chown -R tomcat:tomcat $tomcat_home
     chmod +x $tomcat_home/bin/*.sh
 
+
+
+# Preguntar si activar SSL
+    ssl_activate=$(ssl_activate)
+    
+    # Si SSL está activado, pedir puerto HTTPS
+    if [[ "$ssl_activate" == "si" ]]; then
+        read -p "Ingrese el puerto HTTPS para Tomcat (por defecto 8443): " puerto_https
+        puerto_https=${puerto_https:-8443}
+
+        # Validar el puerto HTTPS
+        if ! validate_https_port "$puerto_https"; then
+            echo "Usando puerto HTTPS por defecto: 8443"
+            puerto_https=8443
+        fi
+    fi
+
+
     # Configurar puerto
     echo "⚙ Configurando Tomcat para usar el puerto $puerto..."
-    sed -i "s/port=\"8080\"/port=\"$puerto\"/" $tomcat_home/conf/server.xml
+    if [[ "$ssl_activate" == "si" ]]; then
+        # Añadir configuración para SSL en server.xml de Tomcat
+        sed -i "s/port=\"8080\"/port=\"$puerto\"/" $tomcat_home/conf/server.xml
+        sed -i "/<\/Service>/i \
+        <Connector port=\"$puerto_https\" protocol=\"HTTP/1.1\" SSLEnabled=\"true\" \
+        maxThreads=\"150\" scheme=\"https\" secure=\"true\" \
+        clientAuth=\"false\" sslProtocol=\"TLS\" \
+        keystoreFile=\"\/opt\/tomcat\/conf\/keystore.jks\" \
+        keystorePass=\"changeit\" />" $tomcat_home/conf/server.xml
+
+        echo "SSL activado. Tomcat escuchará en el puerto $puerto_https para HTTPS."
+
+        # Crear un archivo de almacén de claves (keystore) autofirmado
+        if [[ ! -f "$tomcat_home/conf/keystore.jks" ]]; then
+            echo "Generando keystore autofirmado..."
+            keytool -genkey -keyalg RSA -alias tomcat -keystore $tomcat_home/conf/keystore.jks -storepass changeit -validity 3650 -keysize 2048 -dname "CN=localhost, OU=Unknown, O=Unknown, L=Unknown, ST=Unknown, C=US"
+        fi
+    else
+        sed -i "s/port=\"8080\"/port=\"$puerto\"/" $tomcat_home/conf/server.xml
+        echo "SSL no activado. Tomcat escuchará solo en el puerto $puerto."
+    fi
 
     # Crear servicio systemd con reinicio automático
     if command -v systemctl &>/dev/null; then
@@ -242,19 +297,48 @@ install_caddy() {
     sudo apt update
     sudo apt install -y caddy
 
+ssl_activate=$(ssl_activate)
+    if [[ "$ssl_activate" == "si" ]]; then
+        read -p "Ingrese el puerto HTTPS para Caddy (por defecto 443): " puerto_https
+        puerto_https=${puerto_https:-443}
+        if ! validate_https_port "$puerto_https"; then
+            echo "Usando puerto HTTPS por defecto: 443"
+            puerto_https=443
+        fi
+        ssl_config="    tls internal"
+        # Crear certificados autofirmados (solo si es necesario)
+        sudo mkdir -p /etc/caddy/certs
+        sudo openssl req -x509 -newkey rsa:2048 -keyout /etc/caddy/certs/caddy.key -out /etc/caddy/certs/caddy.crt -days 365 -nodes -subj "/CN=localhost"
+    else
+        ssl_config=""
+        puerto_https=""
+    fi
+
+
     echo "⚙ Configurando Caddy para usar el puerto $puerto..."
     
     # Crear configuración básica de Caddy
-    cat > /etc/caddy/Caddyfile << EOF
-{
-    auto_https off
+    if [[ "$ssl_activate" == "si" ]]; then
+        cat > /etc/caddy/Caddyfile << EOF
+
+http://127.0.1.1:$puerto {
+    respond "Caddy funcionando en HTTP en el puerto $puerto"
 }
 
-:$puerto {
-    respond "Caddy funcionando en el puerto $puerto"
+https://127.0.1.1:$puerto_https {
+root * /var/www/html
+file_server
+$ssl_config
+    respond "Caddy funcionando en HTTPS en el puerto $puerto_https"
 }
 EOF
-
+    else
+        cat > /etc/caddy/Caddyfile << EOF
+http://127.0.1.1:$puerto {
+    respond "Caddy funcionando en HTTP en el puerto $puerto"
+}
+EOF
+    fi
     # Ajustar permisos y reiniciar Caddy
     sudo chown caddy:caddy /etc/caddy/Caddyfile
     sudo systemctl restart caddy
@@ -264,7 +348,10 @@ EOF
 
     if systemctl is-active --quiet caddy; then
         echo "✅ Caddy $repo_name instalado y funcionando en el puerto $puerto"
-        echo "🌐 Puede acceder a Caddy en: http://localhost:$puerto o http:127.0.0.1:$puerto. Si ingresa desde un cliente puede acceder en: http://ip_servidor:$puerto"
+        echo "🌐 Puede acceder a Caddy en: http://localhost:$puerto o http://127.0.0.1:$puerto"
+        if [[ "$ssl_activate" == "si" ]]; then
+            echo "🌐 Acceda mediante https://localhost:$puerto (certificado autofirmado)"
+        fi
     else
         echo "❌ Error al iniciar Caddy. Verifique el log:"
         journalctl -u caddy --no-pager | tail -n 20
@@ -292,8 +379,6 @@ get_latest_nginx_versions() {
 install_nginx() {
     local puerto=$1
 
-    
-
     # Obtener la última versión de Nginx
     read stable_version dev_version <<< $(get_latest_nginx_versions)
 
@@ -302,16 +387,11 @@ install_nginx() {
     echo "2) Desarrollo (Mainline): $dev_version"
 
     while true; do
-    	read -p "Seleccione una opción [1-2]: " version_choice
-    	case $version_choice in
-    	    1) version=$stable_version;
-		break
-            	;;
-            2) version=$dev_version;
-		break
-            	;;
-            *) echo "❌ Opción no válida. Intente de nuevo." 
-            	;;
+        read -p "Seleccione una opción [1-2]: " version_choice
+        case $version_choice in
+            1) version=$stable_version; break ;;
+            2) version=$dev_version; break ;;
+            *) echo "❌ Opción no válida. Intente de nuevo." ;;
         esac
     done
 
@@ -323,37 +403,64 @@ install_nginx() {
     echo "Descargando Nginx $version..."
     curl -L "$nginx_url" -o "$temp_dir/$nginx_tar"
 
-    # Descomprimir el archivo
     echo "Descomprimiendo Nginx..."
     tar -xzvf "$temp_dir/$nginx_tar" -C "$temp_dir"
 
-    # Instalar dependencias necesarias
     sudo apt update
     sudo apt install -y build-essential libpcre3 libpcre3-dev libssl-dev zlib1g zlib1g-dev
 
-    # Compilar e instalar Nginx
     cd "$temp_dir/nginx-$version"
-    ./configure
+    ./configure --with-http_ssl_module
     make
     sudo make install
 
-    # Configurar Nginx para usar el puerto especificado
+    # Configuración de SSL opcional
+    ssl_activate=$(ssl_activate)
+    if [[ "$ssl_activate" == "si" ]]; then
+        read -p "Ingrese el puerto HTTPS para Nginx (por defecto 443): " puerto_https
+        puerto_https=${puerto_https:-443}
+        sudo mkdir -p /etc/nginx/certs
+        sudo openssl req -x509 -newkey rsa:2048 -keyout /etc/nginx/certs/nginx.key -out /etc/nginx/certs/nginx.crt -days 365 -nodes -subj "/CN=localhost"
+        ssl_config="\n        listen $puerto_https ssl;\n        ssl_certificate /etc/nginx/certs/nginx.crt;\n        ssl_certificate_key /etc/nginx/certs/nginx.key;"
+    else
+        ssl_config=""
+        puerto_https=""
+    fi
+
+    # Configurar Nginx
     echo "Configurando Nginx para usar el puerto $puerto..."
-    sudo sed -i "s/port=\"80\"/port=\"$puerto\"/" /usr/local/nginx/conf/nginx.conf
+    sudo tee /usr/local/nginx/conf/nginx.conf > /dev/null << EOF
+worker_processes  1;
 
-    # Agregar /usr/local/nginx/sbin al PATH
+events {
+    worker_connections  1024;
+}
+
+http {
+    include       mime.types;
+    default_type  application/octet-stream;
+
+    server {
+        listen $puerto;
+        location / {
+            root   /usr/local/nginx/html;
+            index  index.html index.htm;
+        }
+        $ssl_config
+    }
+}
+EOF
+
     echo "Agregando Nginx al PATH..."
-
     echo 'export PATH=$PATH:/usr/local/nginx/sbin' >> ~/.bashrc
     source ~/.bashrc
 
-    # Iniciar y habilitar el servicio
     echo "Iniciando Nginx..."
     sudo /usr/local/nginx/sbin/nginx
 
-        echo "✅ Nginx instalado y funcionando en el puerto $puerto."
-        echo "🌐 Puede acceder a Nginx en: http://localhost:$puerto o http:127.0.0.1:$puerto. Si ingresa desde un cliente puede acceder en: http://ip_servidor:$puerto"
-    
+    echo "✅ Nginx instalado y funcionando en el puerto $puerto."
+    echo "🌐 Puede acceder a Nginx en: http://localhost:$puerto"
+    [[ "$ssl_activate" == "si" ]] && echo "🌐 Acceda mediante https://localhost:$puerto_https (certificado autofirmado)"
 }
 
 # Desinstalar un servicio
@@ -450,76 +557,72 @@ uninstall_service() {
         fi
     done
 }
+main_menu_ssl() {
+    while true; do
+        echo "========================================"
+        echo "       Instalador de Servidores SSL"
+        echo "========================================"
+        echo "1) Instalar Nginx"
+        echo "2) Instalar Tomcat"
+        echo "3) Instalar Caddy"
+        echo "4) Desinstalar un servicio"
+        echo "5) Salir"
+        echo "========================================"
+        read -p "Seleccione una opción [1-5]: " choice
 
-main_menuhttp(){
-    
-# Menú principal
-while true; do
-    echo "========================================"
-    echo "       Instalador de Servidores HTTP"
-    echo "========================================"
-    echo "1) Instalar Caddy"
-    echo "2) Instalar Tomcat"
-    echo "3) Instalar Nginx"
-    echo "4) Salir"
-    echo "5) Desinstalar un servicio"
-    echo "========================================"
-    read -p "Seleccione una opción [1-5]: " choice
-
-    case $choice in
-        1)
-	    while true; do
-	    # Solicitar el puerto
-	    echo "Puertos permitidos para evitar utilizar alguno reservado: 80 1024 8080 2019 3000 5000 8081 8443"
-            read -p "Ingrese el puerto para Caddy (si da Enter por defecto será el puerto 2019): " puerto
-            puerto=${puerto:-2019}
-            if validate_port "$puerto"; then
-                install_caddy "$puerto"
-		break
-	    else
-		echo "Intente de nuevo el puerto."
-            fi
-	    done
-	    ;;
-        2)
-	    while true; do
-	    # Solicitar el puerto
-	echo "Puertos permitidos para evitar utilizar alguno reservado: 80 1024 8080 2019 3000 5000 8081 8443"
-            read -p "Ingrese el puerto para Tomcat (si da Enter por defecto será el puerto 8080): " puerto
-            puerto=${puerto:-8080}
-            if validate_port "$puerto"; then
-                install_tomcat "$puerto"
-                break
-	    else
-		echo "Intente de nuevo el puerto."
-            fi
-	    done
-	    ;;
-        3)
-	    while true; do
-            # Solicitar el puerto
-echo "Puertos permitidos para evitar utilizar alguno reservado: 80 1024 8080 2019 3000 5000 8081 8443"
-            read -p "Ingrese el puerto para Nginx (si da Enter por defecto será el puerto 80): " puerto
-            puerto=${puerto:-80}
-            if validate_port "$puerto"; then
-                install_nginx "$puerto"
-                break
-	    else
-		echo "Intente de nuevo el puerto."
-            fi
-	    done
-            ;;
-        4)
-            echo "Saliendo del instalador..."
-            exit 0
-            ;;
-        5)
-            uninstall_service
-            ;;
-        *)
-            echo "Opción no válida. Intente nuevamente."
-            ;;
-    esac
-done
+        case $choice in
+            1)
+                while true; do
+                    echo "Puertos permitidos para evitar utilizar alguno reservado: ${allowed_ports[*]}"
+                    read -p "Ingrese el puerto para Nginx (por defecto 80): " puerto
+                    puerto=${puerto:-80}
+                    if validate_port "$puerto"; then
+                        install_nginx "$puerto"
+                        break
+                    else
+                        echo "❌ Puerto no válido. Intente de nuevo."
+                    fi
+                done
+                ;;
+            2)
+                while true; do
+                    echo "Puertos permitidos para evitar utilizar alguno reservado: ${allowed_ports[*]}"
+                    read -p "Ingrese el puerto para Tomcat (por defecto 8080): " puerto
+                    puerto=${puerto:-8080}
+                    if validate_port "$puerto"; then
+                        install_tomcat "$puerto"
+                        break
+                    else
+                        echo "❌ Puerto no válido. Intente de nuevo."
+                    fi
+                done
+                ;;
+            3)
+                while true; do
+                    echo "Puertos permitidos para evitar utilizar alguno reservado: ${allowed_ports[*]}"
+                    read -p "Ingrese el puerto para Caddy (por defecto 2019): " puerto
+                    puerto=${puerto:-2019}
+                    if validate_port "$puerto"; then
+                        install_caddy "$puerto"
+                        break
+                    else
+                        echo "❌ Puerto no válido. Intente de nuevo."
+                    fi
+                done
+                ;;
+            4)
+                uninstall_service
+                ;;
+            5)
+                echo "👋 Saliendo del instalador..."
+                exit 0
+                ;;
+            *)
+                echo "❌ Opción no válida. Intente nuevamente."
+                ;;
+        esac
+    done
 }
-main_menuhttp
+
+# Llamar al menú principal
+main_menu_ssl

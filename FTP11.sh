@@ -1,28 +1,30 @@
 #!/bin/bash
 
-# Variables
+# Creación de variables
 FTP_ROOT="/srv/ftp"
 GROUP1="reprobados"
 GROUP2="recursadores"
 GENERAL="general"
 ANON="anon"
 PROFTPD_CONF="/etc/proftpd/proftpd.conf"
+TLS_CONF="/etc/proftpd/tls.conf"
+CERT_FILE="/etc/ssl/private/proftpd.pem"
 
 # Función para instalar y configurar ProFTPD
 install_proftpd() {
-    echo "📦 Instalando FTP y acl..."
+    echo "📦 Instalando ProFTPD y acl..."
     apt update && apt install -y proftpd acl
 
-    echo "⚙  Configurando FTP..."
-    sed -i 's/# DefaultRoot/DefaultRoot/g' $PROFTPD_CONF
-    sed -i 's/# RequireValidShell/RequireValidShell/g' $PROFTPD_CONF
+    echo "⚙  Configurando ProFTPD..."
+    sed -i 's/# DefaultRoot/DefaultRoot/g' "$PROFTPD_CONF"
+    sed -i 's/# RequireValidShell/RequireValidShell/g' "$PROFTPD_CONF"
 
-    echo "Habilitando modo pasivo en FTP..."
-    echo -e "\nPassivePorts 49152 65534" >> $PROFTPD_CONF
+    echo "🚠 Habilitando modo pasivo en ProFTPD..."
+    echo -e "\nPassivePorts 49152 65534" >> "$PROFTPD_CONF"
 
-    echo "👥 Creando grupos(reprobados o recursadores )..."
-    getent group $GROUP1 || groupadd $GROUP1
-    getent group $GROUP2 || groupadd $GROUP2
+    echo "👥 Creando grupos..."
+    getent group "$GROUP1" || groupadd "$GROUP1"
+    getent group "$GROUP2" || groupadd "$GROUP2"
 
     echo "📂 Creando directorios FTP..."
     mkdir -p "$FTP_ROOT/$GENERAL" "$FTP_ROOT/$GROUP1" "$FTP_ROOT/$GROUP2" "$FTP_ROOT/usuarios"
@@ -33,9 +35,9 @@ install_proftpd() {
     chmod 755 "$FTP_ROOT"
     chown -R root:root "$FTP_ROOT/$GENERAL"
     chmod 777 "$FTP_ROOT/$GENERAL"
-    chown -R root:$GROUP1 "$FTP_ROOT/$GROUP1"
+    chown -R root:"$GROUP1" "$FTP_ROOT/$GROUP1"
     chmod 775 "$FTP_ROOT/$GROUP1"
-    chown -R root:$GROUP2 "$FTP_ROOT/$GROUP2"
+    chown -R root:"$GROUP2" "$FTP_ROOT/$GROUP2"
     chmod 775 "$FTP_ROOT/$GROUP2"
 
     mkdir -p "$FTP_ROOT/$ANON/general"
@@ -58,11 +60,77 @@ install_proftpd() {
 EOF
 
     echo "📜 Configurando reglas de ProFTPD..."
-    cat <<EOF >> $PROFTPD_CONF
+    cat <<EOF >> "$PROFTPD_CONF"
 
 # Los usuarios inician en su carpeta personal (enjaulados en ~)
 DefaultRoot ~
 EOF
+
+    read -p "¿Deseas activar SSL/TLS en ProFTPD? (s/n): " ENABLE_SSL
+    if [[ "$ENABLE_SSL" =~ ^[sS]$ ]]; then
+        echo "🔐 Configurando SSL/TLS para ProFTPD..."
+        # Instalar el módulo TLS (crypto) necesario
+        apt install -y proftpd-mod-crypto
+	sed -i 's/^#\s*\(LoadModule mod_tls\.c\)/\1/' /etc/proftpd/modules.conf
+        mkdir -p /etc/ssl/private
+        echo "🌍 Ingresa la información para el certificado SSL:"
+        while true; do
+            read -p "Código de país (2 letras, por ejemplo, MX): " C
+            if [[ "$C" =~ ^[a-zA-Z]{2}$ ]]; then
+                C=${C^^}  # Convertir a mayúsculas
+                break
+            else
+                echo "❌ Error: Ingresa solo dos letras para el código de país."
+            fi
+        done
+
+        # Declaración del arreglo asociativo (requiere Bash 4 o superior)
+        declare -A SSL_FIELDS=(
+            ["ST"]="Estado o provincia"
+            ["L"]="Ciudad o localidad"
+            ["O"]="Organización (nombre de la empresa)"
+            ["OU"]="Unidad organizativa (por ejemplo, departamento de las TI)"
+            ["CN"]="Nombre común (dominio o IP del servidor)"
+        )
+
+        for key in "${!SSL_FIELDS[@]}"; do
+            while true; do
+                read -p "${SSL_FIELDS[$key]}: " value
+                if [[ -n "$value" ]]; then
+                    declare "$key"="$value"
+                    break
+                else
+                    echo "❌ Error: No puedes dejar este campo vacío."
+                fi
+            done
+        done
+
+        # Generar certificado autofirmado
+        openssl req -x509 -nodes -newkey rsa:2048 -keyout "$CERT_FILE" -out "$CERT_FILE" -days 3650 \
+            -subj "/C=$C/ST=$ST/L=$L/O=$O/OU=$OU/CN=$CN"
+
+        echo "📄 Configurando archivos de ProFTPD..."
+        # Asegurar que en proftpd.conf se incluya tls.conf (descomentando la línea si es necesario)
+        sed -i 's@^#\s*Include /etc/proftpd/tls.conf@Include /etc/proftpd/tls.conf@g' "$PROFTPD_CONF"
+
+        # Crear o sobrescribir el archivo tls.conf con la configuración recomendada
+        cat <<EOF > "$TLS_CONF"
+<IfModule mod_tls.c>
+    TLSEngine                 on
+    TLSLog                    /var/log/proftpd/tls.log
+    TLSProtocol               TLSv1.2 TLSv1.3
+    TLSRSACertificateFile     $CERT_FILE
+    TLSRSACertificateKeyFile  $CERT_FILE
+    TLSRequired               on
+</IfModule>
+EOF
+
+        # Asignar permisos adecuados al archivo tls.conf
+        chown root:root "$TLS_CONF"
+        chmod 644 "$TLS_CONF"
+
+        echo "✅ SSL/TLS habilitado correctamente."
+    fi
 
     echo "🔄 Reiniciando ProFTPD..."
     systemctl restart proftpd
@@ -72,7 +140,7 @@ EOF
 
 # Función para crear usuarios
 create_users() {
-    echo -e "\n👤 ¿Cuántos usuarios deseas crear?(Ingresa numero porfavor no intentes otra cosa porfavor )"
+    echo -e "\n👤 ¿Cuántos usuarios deseas crear?"
     read -r NUM_USERS
 
     if ! [[ "$NUM_USERS" =~ ^[0-9]+$ ]]; then
@@ -82,17 +150,15 @@ create_users() {
 
     for ((i=1; i<=NUM_USERS; i++)); do
         echo -e "\n📝 Creando usuario $i..."
-
-       while true; do
-        read -p "Nombre de usuario(Favor de ingresar un nombre de usuario sin puntos ni numeros ni signos raros se una buena persona): " USERNAME
-        USERNAME=$(echo "$USERNAME" | tr '[:upper:]' '[:lower:]')
-        if ! [[ "$USERNAME" =~ ^[a-z][a-z0-9_-]{2,15}$ ]]; then
-            echo "Error: Nombre de usuario inválido."
-            continue
-        fi
-	break
+        while true; do
+            read -p "Nombre de usuario: " USERNAME
+            USERNAME=$(echo "$USERNAME" | tr '[:upper:]' '[:lower:]')
+            if ! [[ "$USERNAME" =~ ^[a-z][a-z0-9_-]{2,15}$ ]]; then
+                echo "Error: Nombre de usuario inválido."
+                continue
+            fi
+            break
         done
-
 
         while true; do
             read -s -p "Contraseña: " PASSWORD
@@ -126,7 +192,7 @@ create_users() {
             fi
 
             if ! [[ "$PASSWORD" =~ [\@\#\$\%\^\&\*\(\)\_\+\!] ]]; then
-                echo "❌ La contraseña debe contener al menos un carácter especial (@, #, $, %, ^, &, *, (, ), _, +, !)."
+                echo "❌ La contraseña debe contener al menos un carácter especial (@, #, \$, %, ^, &, *, (, ), _, +, !)."
                 continue
             fi
 
