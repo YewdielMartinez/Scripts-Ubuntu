@@ -132,6 +132,33 @@ configurar_postfix_sasl() {
     sudo postconf -e "smtpd_sasl_auth_enable = yes"
     sudo postconf -e "smtpd_recipient_restrictions = permit_sasl_authenticated,permit_mynetworks,reject_unauth_destination"
 }
+configurar_dominio_rainloop() {
+    read -p "Ingrese la dirección IP del servidor de correo (usada por IMAP y SMTP): " mail_ip
+
+    domain_file="/var/www/html/rainloop/data/_data_/_default_/domains/$domain_name.ini"
+
+    echo "[+] Agregando dominio por defecto $domain_name a RainLoop en $domain_file..."
+
+    sudo mkdir -p "/var/www/html/rainloop/data/_data_/_default_/domains"
+
+    sudo bash -c "cat > '$domain_file' <<EOF
+imap_host = $mail_ip
+imap_port = 143
+imap_secure = none
+smtp_host = $mail_ip
+smtp_port = 25
+smtp_secure = none
+smtp_auth = On
+white_list = 
+use_short_login = On
+EOF"
+
+    sudo chown www-data:www-data "$domain_file"
+    sudo chmod 644 "$domain_file"
+
+    echo "[+] Dominio $domain_name agregado correctamente a RainLoop."
+}
+
 
 # Función para configurar el servidor DNS
 configurar_dns
@@ -184,13 +211,7 @@ EOF'
 
 sudo a2enconf rainloop
 sudo systemctl reload apache2
-read -p "Ingrese la dirección IP del servidor de correo (usada por IMAP y SMTP): " mail_ip
-
-echo "[+] Agregando dominio por defecto $domain_name a RainLoop..."
-sudo -u www-data php /var/www/html/rainloop/data/_data_/_default_/admin.php \
-    --set-domain --name="$domain_name" \
-    --imap-server="$mail_ip" --imap-port="143" --imap-secure="No" \
-    --smtp-server="$mail_ip" --smtp-port="25" --smtp-secure="No" --smtp-auth="On"
+configurar_dominio_rainloop
 
 # Configurar Postfix y Dovecot
 echo "[+] Aplicando configuraciones adicionales..."
@@ -202,6 +223,10 @@ echo "[+] Reiniciando servicios..."
 sudo systemctl restart postfix dovecot apache2
 
 echo "[+] Instalación completada. Accede a http://$domain_name/rainloop para usar RainLoop."
+echo "[!] Importante: para habilitar el inicio de sesión corto (short login), accede a:"
+echo "    http://$domain_name/rainloop/?admin"
+echo "    Luego entra a 'Domains', edita tu dominio y activa 'Use short login'."
+
 
 # Menú de opciones
 while true; do
